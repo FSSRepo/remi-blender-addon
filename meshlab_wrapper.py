@@ -1,17 +1,16 @@
 """
 PyMeshLab integration for Remi.
-Handles installation of pymeshlab into Blender's Python environment
-and running quadric edge collapse decimation.
+Checks for pymeshlab in Blender's Python environment and runs quadric edge
+collapse decimation. Dependency installation is an explicit user action.
 """
 
 import os
+import shlex
 import sys
-import subprocess
-import importlib
 import bpy
 
 # ---------------------------------------------------------------------------
-# PyMeshLab Installation Management
+# PyMeshLab Availability
 # ---------------------------------------------------------------------------
 
 
@@ -30,25 +29,24 @@ def _try_add_user_site_packages():
     return False
 
 
-def _install_to_blender_python() -> bool:
-    """Install pymeshlab into Blender's bundled Python site-packages."""
-    blender_python = sys.executable
-    try:
-        subprocess.check_call(
-            [blender_python, "-m", "pip", "install", "pymeshlab", "--quiet"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        importlib.invalidate_caches()
-        return True
-    except Exception as e:
-        print(f"Remi: pip install failed: {e}")
-        return False
+def pymeshlab_install_command() -> str:
+    """Return the exact opt-in command for Blender's current Python."""
+    return shlex.join(
+        [sys.executable, "-m", "pip", "install", "--user", "pymeshlab"]
+    )
+
+
+def pymeshlab_unavailable_message() -> str:
+    """Return an actionable error without silently changing Blender."""
+    return (
+        "PyMeshLab is required for decimation. Close Blender, run this in "
+        f"Terminal, then reopen Blender: {pymeshlab_install_command()}"
+    )
 
 
 def ensure_pymeshlab() -> bool:
     """Ensure PyMeshLab is importable in Blender's Python environment.
-    Returns True if available (already installed or just installed)."""
+    This check never downloads or installs software."""
     # Attempt 1: Direct import
     try:
         import pymeshlab  # noqa: F401
@@ -63,14 +61,6 @@ def ensure_pymeshlab() -> bool:
         return True
     except ImportError:
         pass
-
-    # Attempt 3: Install via pip into Blender's Python
-    if _install_to_blender_python():
-        try:
-            import pymeshlab  # noqa: F401
-            return True
-        except ImportError:
-            pass
 
     return False
 

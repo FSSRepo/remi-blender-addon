@@ -38,6 +38,7 @@ def _get_temp_dir() -> str:
 
 def _duplicate_object(obj: bpy.types.Object, suffix: str = "_copy") -> bpy.types.Object:
     """Create a duplicate of an object (for processing, keeping original intact)."""
+    bpy.ops.object.select_all(action="DESELECT")
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
     bpy.ops.object.duplicate()
@@ -328,7 +329,7 @@ def _apply_modifiers(obj: bpy.types.Object):
     """Apply all modifiers on an object (makes them permanent)."""
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
-    for mod in obj.modifiers:
+    for mod in list(obj.modifiers):
         try:
             bpy.ops.object.modifier_apply(modifier=mod.name)
         except Exception as e:
@@ -1051,12 +1052,11 @@ def _create_surface_ring_patch(
 ):
     """Triangulate and fair a local membrane bounded by ray hits on the source.
 
-    Operates on the source object **in-place** — no duplicate is created.
-    If *source* has modifiers they are made permanent first.
+    The patch is written onto a prepared duplicate. The source mesh, object
+    data, and modifier stack remain untouched.
     """
     from mathutils.geometry import tessellate_polygon
 
-    _apply_modifiers(source)
     inverse_world = source.matrix_world.inverted()
     minimum_spacing = max(float(settings.voxel_size) * 0.20, 1e-7)
     ring_local = []
@@ -1159,27 +1159,33 @@ def _create_surface_ring_patch(
                     bmesh.ops.reverse_faces(patch_bm, faces=list(patch_bm.faces))
         patch_faces = len(patch_bm.faces)
 
-        # Transfer the patch onto the source mesh in-place
+        # Apply evaluated geometry only on the duplicate, then transfer the
+        # local patch into that prepared copy.
+        result = _duplicate_object(source, suffix)
+        _apply_modifiers(result)
         bm = bmesh.new()
         try:
-            bm.from_mesh(source.data)
+            bm.from_mesh(result.data)
             transferred = {vertex: bm.verts.new(vertex.co) for vertex in patch_bm.verts}
             for face in patch_bm.faces:
                 try:
                     bm.faces.new([transferred[vertex] for vertex in face.verts])
                 except ValueError:
                     pass
-            bm.to_mesh(source.data)
-            source.data.update()
+            bm.to_mesh(result.data)
+            result.data.update()
+        except Exception:
+            _remove_mesh_object(result)
+            raise
         finally:
             bm.free()
     finally:
         patch_bm.free()
 
     bpy.ops.object.select_all(action="DESELECT")
-    source.select_set(True)
-    bpy.context.view_layer.objects.active = source
-    return source, "", {
+    result.select_set(True)
+    bpy.context.view_layer.objects.active = result
+    return result, "", {
         "ray_hits": len(ring_world),
         "ring_vertices": len(ring_local),
         "initial_patch_faces": initial_faces,
@@ -1330,11 +1336,11 @@ def _closing_volume_remesh(source, settings, suffix="_volume_remesh") -> tuple:
 
 
 class Remi_OT_DrawHolePatch(Operator):
-    """Ray-project a viewport lasso and add a local surface membrane in-place."""
+    """Ray-project a viewport lasso and add a membrane to a prepared copy."""
 
     bl_idname = "remi.draw_hole_patch"
     bl_label = "Draw Around Hole"
-    bl_description = "Draw around one visible hole; Remi patches it onto the active mesh in-place"
+    bl_description = "Draw around one visible hole and create a separate prepared patch mesh"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -1505,7 +1511,7 @@ class Remi_OT_DrawHolePatch(Operator):
                 return {"CANCELLED"}
             self.report(
                 {"INFO"},
-                f"Added {report.get('patch_faces', 0):,} patch faces to active mesh",
+                f"Created '{result.name}' with {report.get('patch_faces', 0):,} patch faces",
 
             )
             return {"FINISHED"}
@@ -1513,11 +1519,11 @@ class Remi_OT_DrawHolePatch(Operator):
         return {"RUNNING_MODAL"}
 
 class Remi_OT_RepairHoles(Operator):
-    """Prepare holes/cracks on the active mesh in-place using guide patches or legacy hole repair."""
+    """Prepare holes and cracks on a separate copy of the active mesh."""
 
     bl_idname = "remi.repair_holes"
     bl_label = "Repair Holes"
-    bl_description = "Apply hole/crack repair to the active mesh in-place (no duplicate)"
+    bl_description = "Repair holes and cracks on a separate prepared copy"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -1546,22 +1552,24 @@ class Remi_OT_RepairHoles(Operator):
                     f"{coverage:.0%} boundary coverage",
                 )
             return {"FINISHED"}
-        # In-place repair for HYBRID / BOUNDARY methods
-        stats = _prepare_hole_repair(source, settings)
-        close_distance = _hole_close_distance(source, settings)
+        prepared = _duplicate_object(source, "_prepared")
+        _apply_modifiers(prepared)
+        stats = _prepare_hole_repair(prepared, settings)
+        close_distance = _hole_close_distance(prepared, settings)
         if close_distance > 0.0:
             gn_setup.apply_remi_modifier(
-                obj=source,
+                obj=prepared,
                 voxel_size=settings.voxel_size,
                 hole_close_distance=close_distance,
-                detail_recovery_distance=_detail_recovery_distance(source, settings),
+                detail_recovery_distance=_detail_recovery_distance(prepared, settings),
             )
-            _apply_modifiers(source)
-        context.view_layer.objects.active = source
-        source.select_set(True)
+            _apply_modifiers(prepared)
+        bpy.ops.object.select_all(action="DESELECT")
+        context.view_layer.objects.active = prepared
+        prepared.select_set(True)
         self.report(
             {"INFO"},
-            f"Patched '{source.name}': {stats['new_faces']} boundary patches, "
+            f"Patched '{prepared.name}': {stats['new_faces']} boundary patches, "
             f"close distance {close_distance:.5g}",
         )
         return {"FINISHED"}
@@ -1755,8 +1763,7 @@ class Remi_OT_Decimate(Operator):
 
         # Check PyMeshLab
         if not mlw.ensure_pymeshlab():
-            self.report({"ERROR"}, "PyMeshLab is not installed and could not be installed. "
-                                    "Please run Blender with admin/sudo and it will auto-install.")
+            self.report({"ERROR"}, mlw.pymeshlab_unavailable_message())
             return {"CANCELLED"}
 
         # Setup temp paths
@@ -1837,6 +1844,9 @@ class Remi_OT_Decimate(Operator):
             if keep_texture:
                 _restore_source_materials(obj, new_obj)
             new_obj.name = obj.name + settings.output_name_suffix
+            bpy.ops.object.select_all(action="DESELECT")
+            new_obj.select_set(True)
+            context.view_layer.objects.active = new_obj
             # Vertices are already at world-space coords (baked during export),
             # so the object sits at origin with correct geometry.
             self.report({"INFO"}, f"Decimated model imported as '{new_obj.name}'")
@@ -2092,7 +2102,7 @@ class Remi_OT_FullPipeline(Operator):
     """Run the full Remi pipeline — modal (non‑blocking) with progress."""
     bl_idname = "remi.full_pipeline"
     bl_label = "Remi Pipeline"
-    bl_description = "SDF Remesh → Decimate → [AutoRemesher] → [Bake Textures]"
+    bl_description = "SDF Remesh → Decimate → [AutoRemesher] → [Bake Textures]; Esc cancels between stages"
     bl_options = {"REGISTER"}
 
     # ── Modal state ──────────────────────────────────────────
@@ -2111,7 +2121,7 @@ class Remi_OT_FullPipeline(Operator):
     def fail(self, context, msg):
         self.report({"ERROR"}, msg)
 
-    def cleanup(self, context):
+    def cleanup(self, context, discard_generated=False):
         if hasattr(self, "_timer") and self._timer:
             context.window_manager.event_timer_remove(self._timer)
             self._timer = None
@@ -2119,6 +2129,7 @@ class Remi_OT_FullPipeline(Operator):
         if hasattr(self, "_subproc") and self._subproc:
             try:
                 self._subproc.kill()
+                self._subproc.wait(timeout=1.0)
             except Exception:
                 pass
             self._subproc = None
@@ -2127,6 +2138,21 @@ class Remi_OT_FullPipeline(Operator):
                 os.remove(f)
             except OSError:
                 pass
+        if discard_generated:
+            generated_names = {
+                name
+                for name in (getattr(self, "pipe_cur", ""), getattr(self, "pipe_dup", ""))
+                if name and name != getattr(self, "pipe_obj", "")
+            }
+            for name in generated_names:
+                generated = bpy.data.objects.get(name)
+                if generated and generated.type == "MESH":
+                    _remove_mesh_object(generated)
+            source = bpy.data.objects.get(getattr(self, "pipe_obj", ""))
+            if source:
+                bpy.ops.object.select_all(action="DESELECT")
+                source.select_set(True)
+                context.view_layer.objects.active = source
         self.pipe_state = ""
 
     def go(self, context, state, msg=None):
@@ -2136,7 +2162,13 @@ class Remi_OT_FullPipeline(Operator):
 
     def start_subproc(self, cmd, next_state, context, status_msg):
         self._subproc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        self._subproc_log = []
         self.pipe_next = next_state
         self.go(context, "_SUB", status_msg)
 
@@ -2161,6 +2193,9 @@ class Remi_OT_FullPipeline(Operator):
             settings.use_autoremesher,
         )):
             self.report({"ERROR"}, "Enable a remesh or decimation stage before baking in the full pipeline")
+            return {"CANCELLED"}
+        if settings.use_decimation and not mlw.ensure_pymeshlab():
+            self.report({"ERROR"}, mlw.pymeshlab_unavailable_message())
             return {"CANCELLED"}
 
         current = None
@@ -2211,9 +2246,6 @@ class Remi_OT_FullPipeline(Operator):
 
         if settings.use_decimation:
             self.report({"INFO"}, "Decimating...")
-            if not mlw.ensure_pymeshlab():
-                self.report({"ERROR"}, "PyMeshLab not available")
-                return {"CANCELLED"}
             td = _get_temp_dir()
             source = dup if dup else obj
             base = bpy.path.clean_name(source.name)
@@ -2222,11 +2254,23 @@ class Remi_OT_FullPipeline(Operator):
             if not _export_ply(source, inp):
                 self.report({"ERROR"}, "PLY export failed")
                 return {"CANCELLED"}
-            mlw.run_multi_pass_decimation(
+            results = mlw.run_multi_pass_decimation(
                 input_path=inp, output_path=out,
                 passes=settings.decimation_passes,
                 target_percentage=settings.target_percentage,
                 preserve_detail=settings.decimation_preserve_detail)
+            failed = next((result for result in results if not result["success"]), None)
+            if failed:
+                self.report(
+                    {"ERROR"},
+                    f"Decimation pass {failed['pass']} failed: {failed.get('error')}",
+                )
+                for path in (inp, out):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                return {"CANCELLED"}
             current = _import_ply(out)
             if not current:
                 self.report({"ERROR"}, "Failed to import decimated mesh")
@@ -2314,6 +2358,11 @@ class Remi_OT_FullPipeline(Operator):
         elif dup:
             dup.name = obj.name + settings.output_name_suffix
 
+        result_object = current or dup
+        if result_object:
+            bpy.ops.object.select_all(action="DESELECT")
+            result_object.select_set(True)
+            context.view_layer.objects.active = result_object
         self.report({"INFO"}, "Remi pipeline complete!")
         return {"FINISHED"}
 
@@ -2334,6 +2383,9 @@ class Remi_OT_FullPipeline(Operator):
             settings.use_autoremesher,
         )):
             self.report({"ERROR"}, "Enable a remesh or decimation stage before baking in the full pipeline")
+            return {"CANCELLED"}
+        if settings.use_decimation and not mlw.ensure_pymeshlab():
+            self.report({"ERROR"}, mlw.pymeshlab_unavailable_message())
             return {"CANCELLED"}
 
         self.pipe_obj = obj.name
@@ -2365,6 +2417,10 @@ class Remi_OT_FullPipeline(Operator):
         return {"RUNNING_MODAL"}
 
     def modal(self, context, event):
+        if event.type == "ESC":
+            self.report({"INFO"}, "Remi pipeline cancelled; the source mesh was preserved")
+            self.cleanup(context, discard_generated=True)
+            return {"CANCELLED"}
         if event.type != "TIMER":
             return {"PASS_THROUGH"}
 
@@ -2387,7 +2443,10 @@ class Remi_OT_FullPipeline(Operator):
                             p, tp = data["pass"], data["passes"]
                             self.status(context, f"Decimating... pass {p}/{tp}")
                     except json.JSONDecodeError:
-                        pass
+                        message = line.strip()
+                        if message:
+                            self._subproc_log.append(message)
+                            self._subproc_log = self._subproc_log[-40:]
                     r, _, _ = select.select([sout], [], [], 0)
 
             ret = sp.poll()
@@ -2397,7 +2456,10 @@ class Remi_OT_FullPipeline(Operator):
             # Subprocess finished
             self._subproc = None
             if ret != 0:
-                err = (sp.stderr.read() or "").strip()
+                remainder = (sp.stdout.read() or "").strip() if sp.stdout else ""
+                if remainder:
+                    self._subproc_log.extend(remainder.splitlines())
+                err = "\n".join(self._subproc_log[-20:]).strip()
                 self.fail(context, err or "Subprocess failed")
                 self.cleanup(context)
                 return {"CANCELLED"}
@@ -2626,6 +2688,9 @@ class Remi_OT_FullPipeline(Operator):
             cur = bpy.data.objects.get(self.pipe_cur)
             if cur and src:
                 cur.name = src.name + settings.output_name_suffix
+                bpy.ops.object.select_all(action="DESELECT")
+                cur.select_set(True)
+                context.view_layer.objects.active = cur
             self.pipe_step = self.pipe_total
             context.window_manager.progress_update(self.pipe_step)
             self.report({"INFO"}, "Remi pipeline complete!")

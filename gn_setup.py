@@ -7,6 +7,34 @@ import bpy
 from mathutils import Vector
 
 
+def _set_modifier_input(modifier, identifier: str, value) -> bool:
+    """Set a Geometry Nodes input across the Blender 5.1/5.2 API change.
+
+    Blender 5.2 moved modifier interface values from ID properties such as
+    ``modifier["Socket_2"]`` to ``modifier.properties.inputs.Socket_2.value``.
+    Prefer the new API when it is present and retain the 5.1 fallback while
+    Remi supports both versions.
+    """
+    properties = getattr(modifier, "properties", None)
+    inputs = getattr(properties, "inputs", None)
+    if inputs is not None:
+        socket = getattr(inputs, identifier, None)
+        if socket is None:
+            try:
+                socket = inputs[identifier]
+            except (AttributeError, IndexError, KeyError, TypeError):
+                socket = None
+        if socket is not None and hasattr(socket, "value"):
+            socket.value = value
+            return True
+
+    try:
+        modifier[identifier] = value
+        return True
+    except (AttributeError, KeyError, TypeError):
+        return False
+
+
 def ensure_remi_node_group() -> bpy.types.GeometryNodeTree:
     """Create or return the shared Remi geometry node group.
 
@@ -280,9 +308,9 @@ def apply_remi_modifier(
 
     for name, value in param_map.items():
         if name in name_to_id:
-            mod[name_to_id[name]] = value
+            _set_modifier_input(mod, name_to_id[name], value)
         elif name in mod:
-            mod[name] = value
+            _set_modifier_input(mod, name, value)
 
     # Enable/disable optional nodes based on parameters
     _set_node_mute(group, "SDF Hole Dilate", hole_close_distance <= 0)
