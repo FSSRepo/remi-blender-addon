@@ -5,6 +5,7 @@ import math
 
 import bmesh
 import bpy
+from mathutils.bvhtree import BVHTree
 from mathutils.kdtree import KDTree
 
 
@@ -476,6 +477,58 @@ class Remi_OT_DoubleShellBase:
         for face in bm.faces:
             face.select = False
 
+    @staticmethod
+    def _surface_patches(faces, continuity_dot):
+        """Group adjacent, similarly oriented faces into coherent surfaces."""
+        visible = {face.index for face in faces}
+        face_to_patch = {}
+        patches = []
+        for seed in faces:
+            if seed.index in face_to_patch:
+                continue
+            patch_index = len(patches)
+            patch = set()
+            queue = deque([seed])
+            face_to_patch[seed.index] = patch_index
+            while queue:
+                face = queue.popleft()
+                patch.add(face.index)
+                for edge in face.edges:
+                    for neighbor in edge.link_faces:
+                        neighbor_index = neighbor.index
+                        if neighbor_index not in visible or neighbor_index in face_to_patch:
+                            continue
+                        if face.normal.dot(neighbor.normal) < continuity_dot:
+                            continue
+                        face_to_patch[neighbor_index] = patch_index
+                        queue.append(neighbor)
+            patches.append(patch)
+        return face_to_patch, patches
+
+    @staticmethod
+    def _patch_metrics(bm, patches, face_centers, center):
+        metrics = []
+        for patch in patches:
+            area_sum = 0.0
+            radius_sum = 0.0
+            orientation_sum = 0.0
+            for face_index in patch:
+                face = bm.faces[face_index]
+                area = max(1e-12, face.calc_area())
+                radial = face_centers[face_index] - center
+                area_sum += area
+                radius_sum += area * radial.length
+                if radial.length_squared > 1e-18:
+                    orientation_sum += area * face.normal.dot(radial.normalized())
+            metrics.append(
+                {
+                    "area": area_sum,
+                    "radius": radius_sum / max(1e-12, area_sum),
+                    "orientation": orientation_sum / max(1e-12, area_sum),
+                }
+            )
+        return metrics
+
     def _detect_inner_shell(self, bm):
         bm.normal_update()
         bm.faces.ensure_lookup_table()
@@ -500,92 +553,195 @@ class Remi_OT_DoubleShellBase:
         diagonal = max(1e-9, (max_co - min_co).length)
         max_gap = diagonal * float(self.max_thickness_ratio)
         opposite_dot = math.cos(math.radians(float(self.opposite_angle)))
+        continuity_dot = math.cos(math.radians(float(self.propagation_angle)))
 
         face_centers = {face.index: face.calc_center_median() for face in faces}
+        visible = {face.index for face in faces}
+        face_to_patch, patches = self._surface_patches(faces, continuity_dot)
+        patch_metrics = self._patch_metrics(bm, patches, face_centers, center)
+
         tree = KDTree(len(faces))
         for face in faces:
             tree.insert(face_centers[face.index], face.index)
         tree.balance()
 
-        inner_seeds = set()
-        outer_seeds = set()
+        # A ray cast along the back of each face finds the opposing layer even
+        # when the two sides have unrelated triangle sizes and centroids.  The
+        # KD fallback retains support for noisy scans whose layers are not
+        # perfectly aligned along the face normal.
+        ray_epsilon = max(1e-8, diagonal * 1e-7)
+        surface_bvh = BVHTree.FromBMesh(bm, epsilon=ray_epsilon)
         matched_pairs = set()
         for face in faces:
             center_a = face_centers[face.index]
-            # Nearby same-layer faces commonly precede the opposing face, so
-            # inspect a modest neighborhood rather than only the nearest hit.
-            for _, other_index, distance in tree.find_n(center_a, min(48, len(faces))):
-                if other_index == face.index or distance > max_gap:
-                    continue
-                pair_key = tuple(sorted((face.index, other_index)))
-                if pair_key in matched_pairs:
-                    continue
-                other = bm.faces[other_index]
-                if face.normal.dot(other.normal) > opposite_dot:
-                    continue
+            partner = None
+            direction = -face.normal
+            hit = surface_bvh.ray_cast(
+                center_a + direction * ray_epsilon,
+                direction,
+                max_gap,
+            )
+            if hit[2] is not None:
+                other_index = int(hit[2])
+                if (
+                    other_index != face.index
+                    and other_index in visible
+                    and face_to_patch[other_index] != face_to_patch[face.index]
+                    and face.normal.dot(bm.faces[other_index].normal) <= opposite_dot
+                ):
+                    partner = other_index
 
-                center_b = face_centers[other_index]
-                radius_a = (center_a - center).length
-                radius_b = (center_b - center).length
-                tolerance = diagonal * 1e-6
-                if abs(radius_a - radius_b) > tolerance:
-                    inner, outer = (
-                        (face.index, other_index)
-                        if radius_a < radius_b
-                        else (other_index, face.index)
-                    )
-                else:
-                    radial_a = center_a - center
-                    radial_b = center_b - center
-                    score_a = face.normal.dot(radial_a.normalized()) if radial_a.length else 0.0
-                    score_b = other.normal.dot(radial_b.normalized()) if radial_b.length else 0.0
-                    inner, outer = (
-                        (face.index, other_index)
-                        if score_a < score_b
-                        else (other_index, face.index)
-                    )
-                inner_seeds.add(inner)
-                outer_seeds.add(outer)
-                matched_pairs.add(pair_key)
-                break
-
-        minimum_pairs = max(4, min(32, len(faces) // 100))
-        if len(matched_pairs) < minimum_pairs or not inner_seeds:
-            return None
-
-        continuity_dot = math.cos(math.radians(float(self.propagation_angle)))
-        inner_faces = set(inner_seeds)
-        queue = deque(inner_seeds)
-        while queue:
-            face_index = queue.popleft()
-            face = bm.faces[face_index]
-            for edge in face.edges:
-                for neighbor in edge.link_faces:
-                    neighbor_index = neighbor.index
+            if partner is None:
+                best = None
+                for _, other_index, distance in tree.find_n(center_a, min(64, len(faces))):
                     if (
-                        neighbor_index in inner_faces
-                        or neighbor_index in outer_seeds
-                        or neighbor.hide
+                        other_index == face.index
+                        or distance > max_gap
+                        or face_to_patch[other_index] == face_to_patch[face.index]
                     ):
                         continue
-                    if face.normal.dot(neighbor.normal) < continuity_dot:
+                    other = bm.faces[other_index]
+                    normal_dot = face.normal.dot(other.normal)
+                    if normal_dot > opposite_dot:
                         continue
-                    inner_faces.add(neighbor_index)
-                    queue.append(neighbor_index)
+                    delta = face_centers[other_index] - center_a
+                    if delta.length_squared <= 1e-18:
+                        continue
+                    pair_direction = delta.normalized()
+                    # On a true double layer, each face points away from its
+                    # counterpart. Reject lateral neighbors that only happen
+                    # to have opposing normals on a folded surface.
+                    facing = min(
+                        -face.normal.dot(pair_direction),
+                        other.normal.dot(pair_direction),
+                    )
+                    if facing < 0.15:
+                        continue
+                    score = (
+                        distance / max_gap
+                        + 0.35 * (1.0 + normal_dot)
+                        + 0.35 * (1.0 - facing)
+                    )
+                    if best is None or score < best[0]:
+                        best = (score, other_index)
+                if best is not None:
+                    partner = best[1]
+
+            if partner is None:
+                continue
+            matched_pairs.add(tuple(sorted((face.index, partner))))
+
+        minimum_pairs = max(4, min(32, len(faces) // 100))
+        if len(matched_pairs) < minimum_pairs:
+            return None
+
+        # Consolidate pair evidence at the surface-patch level.  This is the
+        # important distinction from the old per-face seed flood: one noisy
+        # pair can no longer punch a zigzag hole through an otherwise coherent
+        # inner surface.
+        relations = {}
+        for face_a, face_b in matched_pairs:
+            patch_a = face_to_patch[face_a]
+            patch_b = face_to_patch[face_b]
+            if patch_a == patch_b:
+                continue
+            relation = tuple(sorted((patch_a, patch_b)))
+            weight = min(
+                max(1e-12, bm.faces[face_a].calc_area()),
+                max(1e-12, bm.faces[face_b].calc_area()),
+            )
+            relations[relation] = relations.get(relation, 0.0) + weight
+
+        if not relations:
+            return None
+
+        inner_votes = {patch_index: 0.0 for patch_index in range(len(patches))}
+        outer_votes = {patch_index: 0.0 for patch_index in range(len(patches))}
+        for (patch_a, patch_b), weight in relations.items():
+            metrics_a = patch_metrics[patch_a]
+            metrics_b = patch_metrics[patch_b]
+            orientation_a = metrics_a["orientation"]
+            orientation_b = metrics_b["orientation"]
+
+            # Complete nested surfaces have opposite signed radial orientation:
+            # the outer layer points away from the object and the inner layer
+            # points into its cavity. Radius is the stable fallback for partial
+            # or nearly tangent patches.
+            if orientation_a <= -0.05 and orientation_b >= 0.05:
+                inner, outer = patch_a, patch_b
+            elif orientation_b <= -0.05 and orientation_a >= 0.05:
+                inner, outer = patch_b, patch_a
+            elif abs(metrics_a["radius"] - metrics_b["radius"]) > diagonal * 1e-6:
+                inner, outer = (
+                    (patch_a, patch_b)
+                    if metrics_a["radius"] < metrics_b["radius"]
+                    else (patch_b, patch_a)
+                )
+            else:
+                inner, outer = (
+                    (patch_a, patch_b)
+                    if orientation_a < orientation_b
+                    else (patch_b, patch_a)
+                )
+            inner_votes[inner] += weight
+            outer_votes[outer] += weight
+
+        inner_patches = {
+            patch_index
+            for patch_index in range(len(patches))
+            if inner_votes[patch_index] > outer_votes[patch_index]
+        }
+        outer_patches = {
+            patch_index
+            for patch_index in range(len(patches))
+            if outer_votes[patch_index] > inner_votes[patch_index]
+        }
+        if not inner_patches or not outer_patches:
+            return None
+
+        inner_faces = {
+            face_index
+            for patch_index in inner_patches
+            for face_index in patches[patch_index]
+        }
 
         connector_faces = set()
         if self.include_connectors:
+            patch_adjacency = {patch_index: set() for patch_index in range(len(patches))}
             for face in faces:
-                if face.index in inner_faces or face.index in outer_seeds:
-                    continue
-                neighbors = {
-                    linked.index
-                    for edge in face.edges
-                    for linked in edge.link_faces
-                    if linked != face
-                }
-                if neighbors & inner_faces and neighbors & outer_seeds:
-                    connector_faces.add(face.index)
+                patch_a = face_to_patch[face.index]
+                for edge in face.edges:
+                    for neighbor in edge.link_faces:
+                        if neighbor.index not in visible:
+                            continue
+                        patch_b = face_to_patch[neighbor.index]
+                        if patch_a != patch_b:
+                            patch_adjacency[patch_a].add(patch_b)
+
+            # Connector walls can themselves be split into several sharp
+            # patches. Include a whole neutral patch component only when it
+            # topologically bridges a classified inner and outer surface.
+            neutral = set(range(len(patches))) - inner_patches - outer_patches
+            while neutral:
+                start = neutral.pop()
+                component = {start}
+                queue = deque([start])
+                boundary = set()
+                while queue:
+                    patch_index = queue.popleft()
+                    for neighbor in patch_adjacency[patch_index]:
+                        if neighbor in neutral:
+                            neutral.remove(neighbor)
+                            component.add(neighbor)
+                            queue.append(neighbor)
+                        elif neighbor not in component:
+                            boundary.add(neighbor)
+                if boundary & inner_patches and boundary & outer_patches:
+                    connector_faces.update(
+                        face_index
+                        for patch_index in component
+                        for face_index in patches[patch_index]
+                    )
 
         selected = inner_faces | connector_faces
         if not selected or len(selected) >= int(len(faces) * 0.85):
