@@ -20,35 +20,34 @@ jobs:
           - version: "5.2.1"
             release_dir: "Blender5.2"
 
-    env:
-      BLENDER_DMG: ${{ runner.temp }}/blender-${{ matrix.blender.version }}-macos-arm64.dmg
-      BLENDER_APP: ${{ runner.temp }}/Blender-${{ matrix.blender.version }}.app
-
     steps:
       - uses: actions/checkout@v4
 
       - name: Cache Blender download
         uses: actions/cache@v4
         with:
-          path: ${{ env.BLENDER_DMG }}
+          path: ${{ runner.temp }}/blender-${{ matrix.blender.version }}-macos-arm64.dmg
           key: blender-${{ matrix.blender.version }}-macos-arm64
 
       - name: Download Blender
         run: |
-          if [[ ! -f "$BLENDER_DMG" ]]; then
+          blender_dmg="$RUNNER_TEMP/blender-${{ matrix.blender.version }}-macos-arm64.dmg"
+          if [[ ! -f "$blender_dmg" ]]; then
             curl --fail --location --retry 3 \
               "https://download.blender.org/release/${{ matrix.blender.release_dir }}/blender-${{ matrix.blender.version }}-macos-arm64.dmg" \
-              --output "$BLENDER_DMG"
+              --output "$blender_dmg"
           fi
 
       - name: Mount Blender
         run: |
+          blender_dmg="$RUNNER_TEMP/blender-${{ matrix.blender.version }}-macos-arm64.dmg"
+          blender_app="$RUNNER_TEMP/Blender-${{ matrix.blender.version }}.app"
           mount_point="$RUNNER_TEMP/blender-mount-${{ matrix.blender.version }}"
           mkdir -p "$mount_point"
-          hdiutil attach "$BLENDER_DMG" -nobrowse -readonly -mountpoint "$mount_point"
-          cp -R "$mount_point/Blender.app" "$BLENDER_APP"
+          hdiutil attach "$blender_dmg" -nobrowse -readonly -mountpoint "$mount_point"
+          cp -R "$mount_point/Blender.app" "$blender_app"
           hdiutil detach "$mount_point"
-          echo "BLENDER_BIN=$BLENDER_APP/Contents/MacOS/Blender" >> "$GITHUB_ENV"
+          echo "BLENDER_BIN=$blender_app/Contents/MacOS/Blender" >> "$GITHUB_ENV"
 
       - name: Test and validate extension
         run: |
