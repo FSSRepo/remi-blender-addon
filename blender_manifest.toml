@@ -1,0 +1,40 @@
+schema_version = "1.0.0"
+
+id = "remi"
+version = "1.14.0"
+name = "Remi"
+tagline = "Repair, optimize, retopologize, and bake difficult meshes"
+maintainer = "Remi"
+type = "add-on"
+
+website = "https://github.com/shaderko/remi-blender-addon"
+
+blender_version_min = "5.1.0"
+
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+
+# The bundled native Instant Meshes and xatlas modules currently target
+# CPython 3.13 on macOS Apple Silicon.
+platforms = ["macos-arm64"]
+
+[permissions]
+files = "Import, export, compile, and process mesh and texture files"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  ".*",
+  "*.zip",
+  "/install_blender_addon.py",
+  "/dist/",
+  "/scripts/",
+  "/tests/",
+  "/weppy-project-sync/",
+  "/instant_meshes/tests/",
+  "/instant_meshes/native/",
+  "/uv_mapping/tests/",
+  "/uv_mapping/native/",
+  "/alpha_wrap_helper/build/",
+]

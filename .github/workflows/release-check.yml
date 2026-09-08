@@ -1,0 +1,63 @@
+name: Release check
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  blender:
+    name: Blender ${{ matrix.blender.version }}
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        blender:
+          - version: "5.1.2"
+            release_dir: "Blender5.1"
+          - version: "5.2.1"
+            release_dir: "Blender5.2"
+
+    env:
+      BLENDER_DMG: ${{ runner.temp }}/blender-${{ matrix.blender.version }}-macos-arm64.dmg
+      BLENDER_APP: ${{ runner.temp }}/Blender-${{ matrix.blender.version }}.app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Blender download
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BLENDER_DMG }}
+          key: blender-${{ matrix.blender.version }}-macos-arm64
+
+      - name: Download Blender
+        run: |
+          if [[ ! -f "$BLENDER_DMG" ]]; then
+            curl --fail --location --retry 3 \
+              "https://download.blender.org/release/${{ matrix.blender.release_dir }}/blender-${{ matrix.blender.version }}-macos-arm64.dmg" \
+              --output "$BLENDER_DMG"
+          fi
+
+      - name: Mount Blender
+        run: |
+          mount_point="$RUNNER_TEMP/blender-mount-${{ matrix.blender.version }}"
+          mkdir -p "$mount_point"
+          hdiutil attach "$BLENDER_DMG" -nobrowse -readonly -mountpoint "$mount_point"
+          cp -R "$mount_point/Blender.app" "$BLENDER_APP"
+          hdiutil detach "$mount_point"
+          echo "BLENDER_BIN=$BLENDER_APP/Contents/MacOS/Blender" >> "$GITHUB_ENV"
+
+      - name: Test and validate extension
+        run: |
+          ./scripts/release_check.sh "$BLENDER_BIN" "$RUNNER_TEMP/dist"
+
+      - name: Upload release artifact
+        if: matrix.blender.version == '5.2.1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: remi-1.14.0-macos-arm64
+          path: ${{ runner.temp }}/dist/remi-1.14.0-macos-arm64.zip
+          if-no-files-found: error

@@ -6,7 +6,7 @@
 
 **Repair, simplify, retopologize, and rebake difficult meshes without leaving Blender.**
 
-Remi is a Blender 5.1+ add-on for turning dense, damaged, or fragmented source
+Remi is a Blender 5.1/5.2 add-on for turning dense, damaged, or fragmented source
 geometry into a cleaner working mesh. It can close holes and cracks, rebuild a
 surface, reduce triangle count, create guided quad topology with Instant Meshes,
 and bake the source appearance onto the result.
@@ -69,18 +69,27 @@ when the extracted topology should follow a particular path with an edge.
 
 [**Download the latest release**](https://github.com/shaderko/remi-blender-addon/releases/latest)
 
-1. In Blender, open **Edit -> Preferences -> Add-ons**.
-2. Click **Install from Disk** and select the downloaded zip.
-3. Enable **Remi** in the add-on list.
+1. In Blender, open **Edit -> Preferences -> Get Extensions**.
+2. Open the top-right menu, choose **Install from Disk**, and select the downloaded zip.
+3. If Remi is disabled, enable it under **Preferences -> Add-ons**.
 4. In the 3D Viewport, press `N` and open the **Remi** tab.
 
 For development or a manual installation from this repository:
 
 ```bash
-python3 install_blender_addon.py --blender-version 5.1
+python3 install_blender_addon.py --blender-version 5.2
 ```
 
 Restart Blender after a manual installation.
+
+Maintainers can run the complete headless regression suite and build a
+validator-checked extension archive with:
+
+```bash
+./scripts/release_check.sh "/Applications/Blender.app/Contents/MacOS/Blender"
+```
+
+The release archive is written to `dist/`.
 
 ## Quick start
 
@@ -104,6 +113,10 @@ the guides influence that layout rather than acting as manually drawn topology.
 3. Enable the stages you need and expand them to adjust their settings.
 4. Start with **Voxel Remesh** for speed. Use **Closing Volume** when filling gaps is more important than runtime and memory use.
 5. Click **Run Full Remi** and follow the progress shown in Blender.
+
+Press `Esc` to cancel between stages or while an external decimation/remeshing
+process is running. A Blender-native SDF or baking operation must finish its
+current operation before Blender can receive the key press.
 
 When baking is enabled, Remi validates the target UV map first. A missing,
 blank, folded, or overlapping map is regenerated with the selected Remi UV
@@ -148,16 +161,24 @@ discarding the rest of the valid chart layout.
 
 ### Core
 
-- **Blender 5.1+**.
+- **Blender 5.1 or Blender 5.2 LTS**.
 - The current release bundles native CPython 3.13/arm64 modules for Interactive
   Instant Meshes and xatlas-backed UV charting/packing on **macOS on Apple
   Silicon**. No standalone Instant Meshes app, xatlas installation, Homebrew,
   CMake, or compiler is needed for these bundled modules.
-- **PyMeshLab** is installed automatically into Blender's Python environment on
-  first use. The first installation requires an internet connection.
 
 ### Optional features
 
+- **PyMeshLab** is required only for MeshLab Decimation. Remi never downloads
+  it silently. In Blender's Python Console, run `import sys; print(sys.executable)`,
+  close Blender, then install it from Terminal with:
+
+  ```bash
+  "/path/printed/by/blender/python3.13" -m pip install --user pymeshlab
+  ```
+
+  Reopen Blender afterward. If you do not need decimation, disable that stage;
+  repair, remeshing, Instant Meshes, UVs, and baking do not require PyMeshLab.
 - **Alpha-Guided Patches** requires CGAL and CMake. On macOS, run
   `brew install cgal cmake`; on Ubuntu/Debian, run
   `sudo apt install libcgal-dev cmake`. Remi can build its small helper

@@ -7,7 +7,7 @@ Automated mesh optimization pipeline:
 bl_info = {
     "name": "Remi",
     "author": "Remi",
-    "version": (1, 13, 1),
+    "version": (1, 14, 0),
     "blender": (5, 1, 0),
     "location": "View3D > Sidebar > Remi",
     "description": "Repair, optimize, interactively retopologize, and bake meshes inside Blender",
