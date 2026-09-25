@@ -19,6 +19,17 @@ CPython 3.13 runtime. The release module is copied into
 `instant_meshes/_native/` so end users do not need a compiler, CMake, Homebrew,
 or internet access.
 
+## Windows x64 build
+
+The Windows build needs a CPython 3.13 x64 environment with `pybind11` and a
+Visual Studio 2022 C++ toolchain. `scripts\build_native.ps1` configures both
+native modules with MSVC and copies the resulting `cp313`/`win_amd64` modules
+into `instant_meshes/_native/` and `uv_mapping/_native/`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_native.ps1
+```
+
 ## Scope
 
 `session.cpp` adds a persistent orientation/position field session around the

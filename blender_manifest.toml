@@ -16,8 +16,8 @@ license = [
 ]
 
 # The bundled native Instant Meshes and xatlas modules currently target
-# CPython 3.13 on macOS Apple Silicon.
-platforms = ["macos-arm64"]
+# CPython 3.13 on macOS Apple Silicon and Windows x64.
+platforms = ["macos-arm64", "windows-x64"]
 
 [permissions]
 files = "Import, export, compile, and process mesh and texture files"

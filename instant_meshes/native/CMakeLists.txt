@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.15...3.27)
 project(remi_instant_meshes LANGUAGES C CXX)
 
+if(MSVC)
+  # Classic TBB resolves its x64 FPU control helpers from a MASM source.
+  enable_language(ASM_MASM)
+endif()
+
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -27,6 +32,13 @@ file(GLOB TBB_CORE_SOURCES CONFIGURE_DEPENDS
 )
 list(FILTER TBB_CORE_SOURCES EXCLUDE REGEX "/test[^/]*\\.cpp$")
 list(APPEND TBB_CORE_SOURCES ${IM_TBB}/src/rml/client/rml_tbb.cpp)
+if(MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+  # x64 MSVC cannot use inline assembly, so TBB exports the FPU control
+  # helpers from MASM instead. The vendored source was trimmed to macOS,
+  # which relies on inline assembly; restore the x64 implementation.
+  list(APPEND TBB_CORE_SOURCES
+    ${IM_TBB}/src/tbb/intel64-masm/intel64_misc.asm)
+endif()
 
 # TBB's version source expects this generated include. Keep it deterministic
 # instead of embedding the developer machine, compiler command, and timestamp.
@@ -42,14 +54,26 @@ target_include_directories(remi_tbb PRIVATE
   ${IM_TBB}/src
   ${IM_TBB}/src/rml/include
 )
-target_compile_definitions(remi_tbb PRIVATE USE_PTHREAD __TBB_BUILD=1)
-target_compile_options(remi_tbb PRIVATE -frtti -fexceptions)
+if(WIN32)
+  # Classic TBB needs its Win32 thread backend selected explicitly.
+  target_compile_definitions(remi_tbb PRIVATE USE_WINTHREAD=1 __TBB_BUILD=1)
+else()
+  target_compile_definitions(remi_tbb PRIVATE USE_PTHREAD __TBB_BUILD=1)
+endif()
+if(NOT MSVC)
+  target_compile_options(remi_tbb PRIVATE -frtti -fexceptions)
+endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   set_source_files_properties(${IM_TBB}/src/tbb/itt_notify.cpp
     PROPERTIES COMPILE_OPTIONS -Wno-varargs)
   if(APPLE)
     target_compile_options(remi_tbb PRIVATE -Wno-deprecated-declarations)
   endif()
+endif()
+
+if(WIN32)
+  # Keep the Win32 min/max macros from breaking std::min/std::max usage.
+  target_compile_definitions(remi_tbb PRIVATE NOMINMAX)
 endif()
 
 set(IM_CORE_SOURCES
@@ -88,6 +112,14 @@ target_include_directories(_remi_instant_meshes PRIVATE
 
 target_compile_definitions(_remi_instant_meshes PRIVATE EIGEN_MPL2_ONLY)
 target_link_libraries(_remi_instant_meshes PRIVATE remi_tbb)
+if(WIN32)
+  # TBB's MSVC headers would otherwise auto-link a standalone tbb.lib.
+  target_compile_definitions(_remi_instant_meshes PRIVATE __TBB_NO_IMPLICIT_LINKAGE=1)
+endif()
+if(MSVC)
+  # Eigen-heavy translation units exceed the default object section limit.
+  target_compile_options(_remi_instant_meshes PRIVATE /bigobj)
+endif()
 if(APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   target_compile_options(_remi_instant_meshes PRIVATE
     -Wno-deprecated-declarations)

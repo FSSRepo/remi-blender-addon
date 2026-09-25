@@ -6,7 +6,8 @@ their original copyright and license terms; this notice does not relicense
 them.
 
 The release includes the corresponding retained source code and license texts,
-including the source used to build the bundled macOS Apple Silicon binary.
+including the source used to build the bundled macOS Apple Silicon and
+Windows x64 binaries.
 
 ## xatlas
 
@@ -45,7 +46,8 @@ unchanged.
   `COPYING.BSD`, and `COPYING.README`
 
 Only the compiler-verified dense linear algebra and geometry include closure is
-retained. The native target defines `EIGEN_MPL2_ONLY`; a clean build fails if an
+retained, including the ARM NEON and x86 SSE architecture headers from the same
+revision. The native target defines `EIGEN_MPL2_ONLY`; a clean build fails if an
 LGPL-only Eigen header is introduced. The retained Eigen source is provided
 under MPL-2.0 and, as part of the GPL larger work, is additionally distributed
 under GPL-3.0-or-later as permitted by MPL-2.0 section 3.3.
@@ -59,7 +61,9 @@ under GPL-3.0-or-later as permitted by MPL-2.0 section 3.3.
 - License text: `instant_meshes/native/vendor/instant_meshes/ext/tbb/LICENSE`
 
 Remi retains the classic task scheduler source and its compiler-verified header
-closure. The standalone TBB build system, tests, allocator, allocator proxy,
+closure, including the Windows backend headers and the x64 MASM source
+(`src/tbb/intel64-masm/intel64_misc.asm`) that implement the FPU control
+helpers. The standalone TBB build system, tests, allocator, allocator proxy,
 documentation payload, packaging, and unused platform code are omitted. The
 retained upstream TBB source files are unmodified and are built by Remi's CMake
 target. The upstream snapshot contains no `NOTICE` file.

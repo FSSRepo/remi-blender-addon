@@ -162,10 +162,11 @@ discarding the rest of the valid chart layout.
 ### Core
 
 - **Blender 5.1 or Blender 5.2 LTS**.
-- The current release bundles native CPython 3.13/arm64 modules for Interactive
+- The current release bundles native CPython 3.13 modules for Interactive
   Instant Meshes and xatlas-backed UV charting/packing on **macOS on Apple
-  Silicon**. No standalone Instant Meshes app, xatlas installation, Homebrew,
-  CMake, or compiler is needed for these bundled modules.
+  Silicon** and **Windows x64**. No standalone Instant Meshes app, xatlas
+  installation, Homebrew, CMake, or compiler is needed for these bundled
+  modules.
 
 ### Optional features
 
